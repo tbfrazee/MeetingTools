@@ -1,0 +1,9 @@
+<view xmlns="http://labkey.org/data/xml/view" title="Chat">
+    <permissions>
+        <permission name="read"/>
+    </permissions>
+    <dependencies>
+        <dependency path="Ext4" />
+        <dependency path="/meetingtools/css/ChatCSS.css" />
+    </dependencies>
+</view>

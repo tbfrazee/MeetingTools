@@ -1,0 +1,434 @@
+<div id="chatOuterDiv">
+    <div id="chatOverlay" onClick="chatWP.start()">
+        <div id="chatOverlayText"><h2>Click to join chat</h2></div>
+    </div>
+    <div id="chatPanel"></div>
+</div>
+
+<script type="text/javascript">
+    var chatWP = (function() {
+        //Websocket connection
+        var socket;
+        var activeRoom = "General";
+
+        //Layout
+        var chatContainer;
+        var chatStore;
+        var chatGrid;
+        var userStore;
+        var userGrid;
+        var roomStore;
+        var roomGrid;
+        var chatInputField;
+        var chatInputPanel;
+        var panelsDone = 0;
+
+        //CSS variables
+        var serverColor = "Crimson";
+        var localColor = "LightGray";
+        var userColors = ["Tomato", "Orange", "DodgerBlue", "MediumSeaGreen", "SlateBlue", "Violet", "Black"];
+        var colorIndex = -1;
+
+        //Containers
+
+        chatInnerContainer = Ext4.create('Ext.panel.Panel', {
+            height: 525,
+            width: "100%",
+            layout: 'border',
+            defaults: {
+                collapsible: true,
+                split: true,
+            },
+            renderTo: "chatPanel"
+        });
+
+        //Stores
+
+        chatStore = Ext4.create('Ext.data.Store', {
+            storeId: 'chatStore',
+            fields: ['username', 'timestamp', 'msg', 'userId'],
+            data: {'items': [
+                {'username':'','msg':'Connecting...','userId':'0'}
+            ]},
+            proxy: {
+                type: 'memory',
+                reader: {
+                    type: 'json',
+                    root: 'items'
+                }
+            },
+            listeners: {
+                load: function(store) {makeChatGrid(store);}
+            }
+        });
+
+        userStore = Ext4.create('Ext.data.Store', {
+            storeId: 'userStore',
+            fields: ['username', 'status', 'color'],
+            data: {'items': [
+                {'username':LABKEY.Security.currentUser.displayName, 'status':'active', 'color':'lightgray'}
+            ]},
+            proxy: {
+                type: 'memory',
+                reader: {
+                    type: 'json',
+                    root: 'items'
+                }
+            },
+            listeners: {
+                load: function(store) {makeUserGrid(store);},
+                add: function(store, records, index, eOpts) {
+                    for(i in records) {
+                        if((records[i].get("username") == LABKEY.Security.currentUser.displayName)) {
+                            records[i].set("color", "gray");
+                        } else {
+                            ++colorIndex;
+                            if(colorIndex > (userColors.length - 1)) {
+                                colorIndex = 0;
+                            }
+                            records[i].set("color", userColors[colorIndex]);
+                        }
+                    }
+                }
+            }
+        });
+
+        roomStore = Ext4.create('Ext.data.Store', {
+            storeId: 'roomStore',
+            fields: ['roomName', 'status'],
+            data: {'items': [
+                {'roomName':'General', 'status':'active'}
+            ]},
+            proxy: {
+                type: 'memory',
+                reader: {
+                    type: 'json',
+                    root: 'items'
+                }
+            },
+            listeners: {
+                load: function(store) {makeRoomGrid(store);}
+            }
+        });
+
+        //Chat input
+
+        chatInputField = Ext4.create('Ext.form.field.TextArea', {
+            height: 70,
+            padding: "1 5 2 5",
+            columnWidth: .8,
+            enableKeyEvents: true,
+            listeners: {
+                keydown: function(field, e) {
+                    if (e.getKey() == e.ENTER) {
+                        if (e.ctrlKey) {
+                            field.setValue(field.getValue() + "\n");
+                        } else {
+                            e.preventDefault();
+                            sendChat();
+                        }
+                    }
+                }
+            }
+        });
+
+        chatInputPanel = Ext4.create('Ext.panel.Panel', {
+            layout: 'column',
+            height: 75,
+            width: "100%",
+            region: 'south',
+            collapsible: false,
+            items: [
+                chatInputField,
+                {xtype: "button", text: "Send", handler: sendChat, width: "50%", margin: "15 5 0 3", scale: 'large', columnWidth: .2}
+            ]
+        });
+
+        chatInnerContainer.add(chatInputPanel);
+
+        function makeChatGrid(store) {
+
+            chatGrid = Ext4.create('Ext.grid.Panel', {
+                title: 'Chat',
+                store: store,
+                region: 'center',
+                collapsible: false,
+                tools: [
+                    {type:"close", tooltip:"Disconnect", handler:disconnect}
+                ],
+                columns: [
+                    {header: 'User', dataIndex: 'username', flex: 1,
+                        renderer: function(value, meta) {
+
+                            if(value == "SERVER:") {
+                                return value;
+                            }
+
+                            var color = "black";
+                            var record = userStore.findRecord("username", value.slice(0,-1));
+                            if(record != undefined) {
+                                color = record.get("color");
+                            }
+                            meta.style = "color: " + color + "; font-weight: bold;";
+
+                            return value;
+                        }
+                    },
+                    {header: "Timestamp", dataIndex: 'timestamp', flex: 1},
+                    {header: 'Message', dataIndex: 'msg', flex: 9,
+                        renderer: function(value, meta) {
+                            meta.tdCls = "multiline-row";
+                            return value;
+                        }
+                    }
+                ],
+                height: 525,
+                width: "100%",
+                viewConfig: {
+                    getRowClass: function(record, rowIndex, rowParams, store) {
+                        if(record.get("username") == "SERVER:") {
+                            return 'server-msg-row';
+                        }
+                    }
+                }
+            });
+
+            chatInnerContainer.add(chatGrid);
+        }
+
+        function makeUserGrid(store) {
+            //User panel
+
+            userGrid = Ext4.create('Ext.grid.Panel', {
+                title: 'Users',
+                region:'east',
+                floatable: false,
+                width: 175,
+                minWidth: 100,
+                maxWidth: 250,
+                store: store,
+                columns: [
+                    {header: "User", dataIndex: 'username', flex: 1}
+                ]
+            });
+
+            chatInnerContainer.add(userGrid);
+
+            if(chatInnerContainer.getEl().offsetWidth < (document.documentElement.clientWidth / 2)) {
+                userGrid.collapse();
+            }
+        }
+
+        function makeRoomGrid(store) {
+            //Room panel
+
+            roomGrid = Ext4.create('Ext.grid.Panel', {
+                title: 'Rooms',
+                region:'west',
+                floatable: false,
+                width: 175,
+                minWidth: 100,
+                maxWidth: 250,
+                store: store,
+                columns: [
+                    {header: "Room", dataIndex: 'roomName', flex: 1}
+                ],
+                tools: [
+                    {type:"plus", tooltip:"New Room", handler:newRoom}
+                ],
+                listeners: {
+                    select: function(grid, selected, rowindex, eOpts) {
+                        if(selected.get("roomName") != activeRoom) {
+                            var srJson = {};
+                            srJson.type = "switchroom";
+                            srJson.container = LABKEY.ActionURL.getContainer();
+                            srJson.roomName = selected.get("roomName");
+                            chatStore.getProxy().clear();
+                            socket.send(JSON.stringify(srJson));
+                        }
+                    }
+                }
+            });
+
+            chatInnerContainer.add(roomGrid);
+
+            if(chatInnerContainer.getEl().offsetWidth < (document.documentElement.clientWidth / 2)) {
+                roomGrid.collapse();
+            }
+        }
+
+
+        //WebSocket
+        function initWS() {
+            socket = new WebSocket((window.location.protocol==="http:"?"ws:":"wss:") + "//" + window.location.host + LABKEY.contextPath + "/ChatServer");
+
+            socket.onopen = function sendInit() {
+                var initInfo = {};
+                initInfo.type = "init";
+                initInfo.container = LABKEY.ActionURL.getContainer();
+                initInfo.roomName = activeRoom;
+                socket.send(JSON.stringify(initInfo));
+            }
+
+			socket.onclose = function wsclose(reason) {
+				var stuff = reason;
+				var reason = stuff;
+			}
+			
+            socket.onmessage = function processMessage(message) {
+                if(message.data != null) {
+                    var data = JSON.parse(message.data);
+                    var record = {};
+                    record.timestamp = new Date().toLocaleTimeString();
+                    var displayMsg = data.message != undefined ? data.message.replace(/\n/g, "<br/>") : null;
+                    switch(data.msgType) {
+                        case 'server':
+                            record.username = "SERVER:";
+                            record.msg = displayMsg;
+                            record.userId = 0;
+                            break;
+                        case 'msg':
+                            record.username = data.username + ":";
+                            record.msg = displayMsg;
+                            record.userId = data.userId;
+                            break;
+                        case 'newconn':
+                            if(data.username != LABKEY.Security.currentUser.displayName){
+                                userRecord = {};
+                                userRecord.username = data.username;
+                                userRecord.status = "active";
+                                userStore.add(userRecord);
+                            }
+                            record.username = "SERVER:";
+                            record.msg = displayMsg;
+                            record.userId = 0;
+                            break;
+                        case 'newroom':
+                            roomRecord = {};
+                            roomRecord.roomName = data.roomName;
+                            roomRecord.status = "active";
+                            roomStore.add(roomRecord);
+                            if(LABKEY.Security.currentUser.displayName == data.username) {
+                                roomGrid.getView().select(roomStore.find("roomName", data.roomName));
+                            }
+                            break;
+                        case 'delroom':
+                            roomStore.each(function(record) {
+                                if(record.get("roomName") == data.roomName) {
+                                    roomStore.remove(record);
+                                }
+                            });
+                            break;
+                        case 'init':
+                            activeRoom = data.activeRoom;
+                            var initUsers = data.users.split(",");
+                            userStore.removeAll();
+                            for(i in initUsers) {
+                                if(/*initUsers[i] != LABKEY.Security.currentUser.displayName && */initUsers[i] != "" && initUsers[i] != undefined){
+                                    userRecord = {};
+                                    userRecord.username = initUsers[i];
+                                    userRecord.status = "active";
+                                    userStore.add(userRecord);
+                                }
+                            }
+                            var initRooms = data.rooms.split(",");
+                            for(i in initRooms) {
+                                if(initRooms[i] != "General" && roomStore.findRecord("roomName", initRooms[i]) == undefined && initRooms[i] != "" && initRooms[i] != undefined){
+                                    roomRecord = {};
+                                    roomRecord.roomName = initRooms[i];
+                                    roomRecord.status = "active";
+                                    roomStore.add(roomRecord);
+                                }
+                            }
+                            roomGrid.getView().select(roomStore.find("roomName", activeRoom))
+                            record.username = "SERVER:";
+                            record.msg = displayMsg;
+                            record.userId = 0;
+                            break;
+                        case 'disconn':
+                            userStore.each(function(record) {
+                                if(record.get("username") == data.username) {
+                                    userStore.remove(record);
+                                }
+                            });
+                            record.username = "SERVER:";
+                            record.msg = displayMsg;
+                            record.userId = 0;
+                            break;
+                        case 'error':
+                            record.username = "SERVER:";
+                            record.msg = displayMsg;
+                            record.userId = 0;
+                            Ext4.MessageBox.alert("Error", displayMsg);
+                            break;
+                        default:
+                            record.username = "?";
+                            record.msg = "!?!?!?!?!?";
+                            record.userId = 0;
+                    }
+                    if(data.message != undefined && data.message != "") {
+                        chatStore.add(record);
+                        chatGrid.getView().scrollBy(0, 999999, true);
+                    }
+                }
+            }
+        }
+
+        function sendChat() {
+            if(socket.readyState == 1) {
+                var msg = {};
+                msg.type = "msg";
+                msg.text = chatInputField.getValue();
+                if(msg.text.trim() != "") {
+                    socket.send(JSON.stringify(msg));
+                    chatInputField.reset();
+                }
+            } else {
+                var record = {};
+                record.username = "";
+                record.msg = "Your connection to the server has been closed. Trying to reconnect...";
+                record.userId = 0;
+                chatStore.add(record);
+                initWS();
+            }
+        }
+
+        function newRoom() {
+            Ext4.MessageBox.prompt('New Chat Room', 'Please enter a name for your new chat room:', _newRoom);
+        }
+
+        function _newRoom(btn, text) {
+            if(btn == "ok") {
+                if(text != "") {
+                    socket.send("{type:'newroom',container:'" + LABKEY.ActionURL.getContainer() + "',roomName:" + text + "}");
+                } else {
+                    Ext4.MessageBox.alert("Error", "You must enter a unique, non-blank name. Please try again.");
+                }
+            }
+        }
+
+        function disconnect() {
+            socket.close();
+            var record = {};
+            record.username = "";
+            record.msg = "You have been disconnected from chat.";
+            record.userId = 0;
+            chatStore.add(record);
+            document.getElementById("chatOverlay").style.display = "block";
+        }
+
+        function connect(){
+            document.getElementById("chatOverlay").style.display = "none";
+            initWS();
+        }
+
+        window.onbeforeunload = function(e) {
+            socket.send("{type: 'disconn'}");
+            socket.close();
+        }
+
+        return {
+            start: function(){connect();}
+        }
+    })();
+</script>

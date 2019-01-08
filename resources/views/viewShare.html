@@ -1,0 +1,591 @@
+<div id="viewSharePanel"></div>
+
+<script type="text/javascript">
+(function() {
+	//Stores
+	var roomStore;
+	var userStore;
+	
+	//Layout
+	var viewShareAccordion;
+	var roomSelectPanel;
+	var roomSelectGrid;
+	var viewSharePanel;
+	var userPanel;
+	var sharedView;
+	var userGrid;
+	var noSessionsMsg = "No sessions available.";
+	
+	//Session setup
+	var sessionSetupWindow;
+	var queryOptions = [];
+	
+	//Session control
+	var ownerControlPanel;
+	var ownerSubmitButton;
+	var ownerWindowMsg;
+	var isNewSession = true;
+	var activeRoom;
+	var pendingQueryUpdate;
+	var newQueryNotif;
+	
+	//WebSocket
+	var socket;
+
+    Ext4.onReady(makeStores);
+
+	/******************************
+	Stores
+	******************************/
+    function makeStores() {
+
+        roomStore = Ext4.create('Ext.data.Store', {
+            storeId: 'roomStore',
+            fields: ['title', 'status', 'createdBy', 'createdTime'],
+            data: {'items': [ ]},
+            proxy: {
+                type: 'memory',
+                reader: {
+                    type: 'json',
+                    root: 'items'
+                }
+            },
+            listeners: {
+                load: function(store) {makeLayout(store);}
+            }
+        });
+
+        refreshRoomStore();
+
+		queryStore = Ext4.create('Ext.data.Store', {
+			storeId: 'queryStore',
+            fields: ['queryName', 'label', 'type', 'id'],
+            data: {'items': []},
+            proxy: {
+                type: 'memory',
+                reader: {
+                    type: 'json',
+                    root: 'items'
+                }
+            }
+		});
+    }
+
+    function refreshRoomStore() {
+        //Get current sessions
+        //This is done with an Ajax request so we're not needlessly opening websockets until necessary
+        Ext4.Ajax.request({
+            url: LABKEY.ActionURL.buildURL('MeetingTools', 'GetViewSessions'),
+            method: 'POST',
+            success: _refreshRoomStore
+        });
+    }
+
+    function _refreshRoomStore(response) {
+        var data = JSON.parse(response.responseText);
+        if(data.rooms != undefined && data.rooms != "") {
+            roomStore.removeAll();
+            for(i in data.rooms) {
+                roomStore.add(data.rooms[i]);
+            }
+        } else {
+			if(roomStore.find("title", noSessionsMsg) == -1) {
+				roomStore.add({"title": noSessionsMsg});
+			}
+		}
+    }
+
+	/******************************
+	Layout
+	******************************/
+    function makeLayout(store) {
+		
+		viewShareAccordion = Ext4.create('Ext.panel.Panel', {
+            layout: "accordion",
+            autoHeight: true,
+            width: "100%",
+            renderTo: "viewSharePanel"
+        });
+		
+        roomSelectPanel = Ext4.create('Ext.panel.Panel', {
+            title: 'Select Session to Join',
+            width: "100%",
+            autoHeight: true
+        });
+
+        viewShareAccordion.add(roomSelectPanel);
+
+        roomSelectGrid = Ext4.create('Ext.grid.Panel', {
+            width: "100%",
+            height: 200,
+            store: store,
+            columns: [
+                {header: "Session Name", dataIndex: 'title', flex: 2},
+                {header: "Status", dataIndex: "status", flex: 1,
+                    renderer: function(value, meta) {
+                        if(value == "Active") {
+                            meta.style = "color: green; font-weight: bold;";
+                        } else if(value == "In Setup") {
+                            meta.style = "color: orange; font-weight: bold;";
+                        } else if(value == "Idle") {
+                            meta.style = "color: yellow; font-weight: bold;";
+                        } else if(value == "Closed") {
+                            meta.style = "color: red; font-weight: bold;";
+                        }
+                        return value;
+                    }
+                },
+                {header: "Created By", dataIndex: 'createdBy', flex: 1},
+                {header: "Started At", dataIndex: 'createdTime', flex: 1}
+            ],
+            buttons: [
+                {
+                    text: 'Refresh',
+                    handler: refreshRoomStore
+                },
+                {
+                    text: 'Create New Session',
+                    handler: createNewRoom
+                }
+            ],
+            listeners: {
+				select: roomSelect
+			}
+        });
+
+        roomSelectPanel.add(roomSelectGrid);
+
+        viewSharePanel = Ext4.create('Ext.panel.Panel', {
+            title: 'No Session Selected',
+            width: "100%",
+			autoHeight: true,
+			items: [
+				{
+					xtype: 'panel',
+					html: "<div id='sessionDiv' style='overflow: auto; height: 5'></div>"
+				}
+			]
+        });
+		
+		viewShareAccordion.add(viewSharePanel);
+		
+		userStore = Ext4.create('Ext.data.Store', {
+            storeId: 'userStore',
+            fields: ['username', 'status'],
+            data: {'items': [ /*Empty by default*/ ]},
+            proxy: {
+                type: 'memory',
+                reader: {
+                    type: 'json',
+                    root: 'items'
+                }
+            },
+			listeners: {
+				//load: makeUserGrid
+			}
+        });
+	}
+	
+	function makeUserGrid(store) {
+		
+		userGrid = Ext4.create('Ext.grid.Panel', {
+			title: 'Users',
+			width: 175,
+			minWidth: 100,
+			maxWidth: 250,
+			store: store,
+			columns: [
+				{header: "User", dataIndex: 'username', flex: 1}
+			]
+		});
+		
+		viewSharePanel.add(userGrid);
+    }
+
+	/******************************
+	New Room/Session
+	******************************/
+	function createNewRoom() {
+        Ext4.MessageBox.prompt("New Session", "Please enter a name for your new view sharing session:", _createNewRoom);
+    }
+
+    function _createNewRoom(btn, text) {
+        if(btn == "ok") {
+            if(text != "" && roomStore.find("title", text) == -1) {
+                record = {};
+                record.title = text;
+                record.status = "In Setup";
+                record.createdBy = LABKEY.Security.currentUser.displayName;
+                record.createdTime = new Date().toLocaleTimeString();
+				activeRoom = roomStore.add(record);
+				activeRoom = activeRoom[0];
+
+                Ext4.Ajax.request({
+                    url: LABKEY.ActionURL.buildURL('MeetingTools', 'ViewShareSetup'),
+					jsonData: record,
+                    method: 'POST',
+                    success: makeSetupWindow
+                });
+
+            } else {
+                Ext4.MessageBox.alert("Error", "You must enter a non-blank, unique name for your new session. Please try again.", createNewRoom);
+            }
+        }
+    }
+
+    function makeSetupWindow(response) {
+        var data = JSON.parse(response.responseText);
+        if(data.options != undefined) {
+			queryStore.removeAll();
+            for(i in data.options) {
+				queryStore.add(data.options[i]);
+			}
+        }
+		isNewSession = true;
+        _makeSetupWindow();
+    }
+
+    function _makeSetupWindow(button) {
+	
+        sessionSetupWindow = Ext4.create('Ext.window.Window', {
+            title: 'Setup Session',
+            height: 300,
+            width: 400,
+            layout: 'fit',
+            items: [
+                {
+                    xtype: 'form',
+                    width: "100%",
+                    height: "100%",
+                    items: [
+						{
+							xtype: 'container',
+							html: '<b>(Optional)</b> Enter a name to appear at the top of the data grid. If left blank, the dataset or report name will be used.',
+							height: 50
+						},
+						{
+							xtype: 'textfield',
+							name: 'sharedViewName',
+						},
+                        {
+                            xtype: 'container',
+                            html: '<b>(Required)</b> Select a dataset or report view to start with, then press Submit. You can modify the data view from there.',
+							height: 50
+                        },
+						{
+							xtype: 'grid',
+							store: queryStore,
+							columns: [
+								{header: 'Report Name', dataIndex: 'label', flex: 3},
+								{header: 'Type', dataIndex: 'type', flex: 1}
+							],
+							width: "100%",
+							height: 200,
+							listeners: {
+								select: function(grid, selected, rowindex, eOpts) {
+									var form = this.up('form').getForm();
+									var label = form.findField('sharedViewName').getValue() == "" ? selected.get("label") : form.findField('sharedViewName').getValue();									
+									if(selected.get("type") == "Dataset") {
+										makeOwnerView("Dataset", label, selected.get("queryName"));
+									} else {
+										makeOwnerView("Report", label, selected.get("queryName"), selected.get("id").replace('db:', ''));
+									}
+								}
+							}
+						}
+                    ]
+                }
+            ]
+        }).show();
+		
+		roomSelect(undefined, undefined, undefined, undefined, true);
+    }
+	
+	function makeOwnerView(type, label, queryName, reportId) {
+		
+		sessionSetupWindow.close();
+		
+		var sharedViewConfig;
+		if(type == "Dataset") {
+			sharedViewConfig = {
+				schemaName: 'study',
+				queryName: queryName,
+				title: label
+			}
+		} else {
+			sharedViewConfig = {
+				schemaName: 'study',
+				queryName: queryName,
+				reportId: reportId,
+				viewName: 'default',
+				title: label
+			}
+		}
+		
+		renderSharedView(sharedViewConfig);
+		
+		if(isNewSession && ownerControlPanel == undefined) {
+			ownerWindowMsg = Ext4.create('Ext.container.Container', {
+				width: "100%",
+				style: "background-color: yellow;",
+				html: '<b>You are in control of this session.</b><br/><span id="ownerMsg"><b>This session has not yet begun.</b> Apply any changes to the view (i.e. sorting, filters) you would like, then click the "Start Session" button to send this view to session participants.</span>'
+			});
+			
+			ownerSubmitButton = Ext4.create('Ext.button.Button', {
+				text: 'Start Session',
+				handler: startSession
+			});
+			
+			ownerChangeQueryButton = Ext4.create('Ext.button.Button', {
+				text: 'Change Base Table',
+				handler: _makeSetupWindow
+			});
+			
+			ownerControlPanel = Ext4.create('Ext.panel.Panel', {
+				layout: {
+					type: 'vbox',
+					align: 'center',
+					pack: 'start'
+				},
+				items: [
+					ownerWindowMsg
+				],
+				buttons: [ownerSubmitButton, ownerChangeQueryButton],
+				buttonAlign: 'left'
+			});
+			
+			viewSharePanel.insert(0, ownerControlPanel);
+		} else if(!isNewSession){
+			document.getElementById("ownerMsg").innerHTML = 'If you make changes to the view, click "Update Your Participants" to send it to your participants.';
+			ownerSubmitButton.setText("Update Your Participants");
+			ownerSubmitButton.setHandler(sendViewUpdate);
+		}
+		
+	}
+	
+	function startSession() {
+		isNewSession = false;
+		document.getElementById("ownerMsg").innerHTML = 'If you make changes to the view, click "Update Your Participants" to send it to your participants.';
+		ownerSubmitButton.setText("Update Your Participants");
+		ownerSubmitButton.setHandler(sendViewUpdate);
+		sendViewUpdate();
+	}
+	
+	function processNewView(queryConfig) {
+		if(queryConfig.filterKeys != undefined && queryConfig.filterKeys.length > 0) {
+			queryConfig.filters = [];
+			for(i = 0; i < queryConfig.filterKeys.length; i++) {
+				var filter = LABKEY.Filter.create(queryConfig.filterKeys[i].key, queryConfig.filterKeys[i].value, LABKEY.Filter.getFilterTypeForURLSuffix(queryConfig.filterKeys[i].type));
+				queryConfig.filters.push(filter);
+			}
+		}
+		renderSharedView(queryConfig);
+	}
+	
+	function renderSharedView(config) {
+		if(sharedView != null) {
+			sharedView.destroy();
+		}
+		
+		sharedView = LABKEY.QueryWebPart(config);
+		
+		sharedView.on('render', function() {
+			document.getElementById("sessionDiv").style.height = document.getElementById(sharedView.domId).scrollHeight + 50;
+			viewSharePanel.expand();
+			viewShareAccordion.doLayout();
+		});
+		
+		sharedView.render("sessionDiv");
+	}
+	
+	/******************************
+	Websocket
+	******************************/
+    function roomSelect(grid, selected, rowindex, eOpts, isOwnerInit) {
+		
+		if(isOwnerInit !== true) {
+			if(selected.get("title") == undefined || selected.get("title") == noSessionsMsg) {
+				return;
+			}
+			activeRoom = selected;
+		}
+		
+		if(socket != undefined && socket.readyState == 1) {
+			sJson = {};
+			sJson.type = "disconn";
+			socket.send(JSON.stringify(sJson));
+			socket.close();
+		}
+
+        socket = new WebSocket((window.location.protocol==="http:"?"ws:":"wss:") + "//" + window.location.host + LABKEY.contextPath + "/ViewShareServer");
+
+        socket.onopen = function sendInit() {
+            sJson = {};
+            sJson.type = "init";
+            sJson.roomName = activeRoom.data.title;
+            sJson.container = LABKEY.ActionURL.getContainer();
+			sJson.isNewSession = isOwnerInit;
+            socket.send(JSON.stringify(sJson));
+        }
+
+        socket.onmessage = function processMessage(message) {
+            if(message.data != undefined) {
+                var data = JSON.parse(message.data);
+                switch(data.msgType) {
+                    case "init":
+                        if(data.users != null) {
+                            for(i in data.users) {
+                                record = {};
+                                record.username = data.users[i];
+                                record.status = "Active";
+                                userStore.add(record);
+                            }
+                        }
+						if(!isOwnerInit) {
+							if(data.queryConfig.schemaName != undefined) {
+								renderSharedView(data.queryConfig);
+							} else {
+								document.getElementById("sessionDiv").innerHTML = "This session has not started yet. Please stand by. Data will appear here when the session owner is ready.";
+							}
+							viewSharePanel.expand();
+						}
+						break;
+					case "newview":
+						if(data.queryConfig != undefined) {
+							qConfig = JSON.parse(data.queryConfig);
+							pendingQueryUpdate = qConfig;
+							if(sharedView == undefined) {
+								processNewView(pendingQueryUpdate);
+							} else {
+								notifyUserOfUpdate();
+							}
+						}
+						break;
+					case "newconn":
+						if(data.username != undefined) {
+							record = {};
+							record.username = data.username;
+							record.status = "Active";
+							userStore.add(record);
+						}
+						break;
+					case "delroom":
+						endSession();
+						break;
+					case "disconn":
+						record = userStore.findRecord("username", data.username);
+						if(record != undefined) {
+							userStore.remove(record);
+						}
+						break;
+					case "error":
+						Ext4.MessageBox.alert("Error", data.error);
+						break;
+                }
+            }
+        }
+    }
+
+	function sendViewUpdate() {
+		if(sharedView != undefined && socket != undefined && socket.readyState == 1) {
+			sharedView.getQueryDetails(makeQueryConfig, makeConfigFailure, sharedView);
+		}
+	
+		function makeQueryConfig(queryDeets, viewName, somethingElse) {
+			
+			var queryConfig = sharedView.getQueryConfig();
+			var viewConfig;
+
+			var viewName = queryDeets.viewName ? queryDeets.viewName : "";
+			
+			for(i in queryDeets.views) {
+				if(queryDeets.views[i].name == viewName) {
+					viewConfig = queryDeets.views[i];
+					break;
+				}
+			}
+
+			if(viewConfig == undefined) {
+				//Error
+			} else if(viewConfig.shared !== true) {
+				//If not a shared view, we'll have to build a column array
+				//Maybe we should just do this by default anyway??
+			}
+
+			if(queryConfig.columns == undefined) {
+					queryConfig.columns = [];
+				}
+			for(i in viewConfig.columns) {
+				queryConfig.columns.push(viewConfig.columns[i].key);
+			}
+
+			//Labkey Filter object values are functions that don't stringify, so we'll just copy the keys and construct the objects on the client
+			//This requires deconstructing any existing Filter objects in the queryConfig
+			if(viewConfig.filter != undefined && viewConfig.filter.length > 0) {
+				queryConfig.filterKeys = [];
+				for(i = 0; i < viewConfig.filter.length; i++) {
+					queryConfig.filterKeys.push({key: viewConfig.filter[i].fieldKey, value: viewConfig.filter[i].value, type: viewConfig.filter[i].op});
+				}
+			}
+			if(queryConfig.filters != undefined && queryConfig.filters.length > 0) {
+				for(i = 0; i < queryConfig.filters.length; i++) {
+					queryConfig.filterKeys.push({key: queryConfig.filters[i].getColumnName(), value: queryConfig.filters[i].getValue(), type: queryConfig.filters[i].getFilterType() != undefined ? queryConfig.filters[i].getFilterType().getURLSuffix() : undefined})
+				}
+			}
+			queryConfig.filters = undefined;
+			
+			if(viewConfig.sort != undefined && viewConfig.sort.length > 0) {
+				var sortArray = [];
+				for(i = 0; i < viewConfig.sort.length; i++) {
+					sortArray.push(viewConfig.sort[i].dir + viewConfig.sort[i].fieldKey)
+				}
+				queryConfig.sort = sortArray.join(",");
+			}
+			
+			_sendViewUpdate(queryConfig);
+			
+		}
+
+		function makeConfigFailure(a, b, c) {
+			alert("FAILURE!!!!!!HAHAH!!!!HASHFDHFSDF");
+		}
+		
+		function _sendViewUpdate(config) {
+				if(config != undefined) {
+					sJson = {};
+					sJson.type = "newview";
+					sJson.container = LABKEY.ActionURL.getContainer();
+					sJson.roomName = activeRoom.data.title;
+					sJson.queryConfig = JSON.stringify(config);
+				}
+				socket.send(JSON.stringify(sJson));
+		}
+	}
+	
+	function notifyUserOfUpdate() {
+		newQueryNotif = Ext4.create('Ext.window.Window', {
+			height: 200,
+			width: 400,
+			closable: false,
+			items: [
+				{xtype: 'container', html: '<b>A new data view is available!</b><br/>Click to replace your current view with the new one. You can move this window and keep working with your current view until you\'re ready to continue.'},
+				{xtype: 'button', text: 'Update View', handler: function(){
+					newQueryNotif.close();
+					processNewView(pendingQueryUpdate);
+				}}
+			]
+		}).show();
+	}
+	
+	function endSession() {
+		Ext4.MessageBox.alert("The End", "This session has ended. Goodbye.");
+		socket.close();
+	}
+	
+	window.onbeforeunload = function(e) {
+        socket.send("{type: 'disconn'}");
+        socket.close();
+    }
+})();
+
+</script>

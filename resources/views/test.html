@@ -1,0 +1,71 @@
+<div id="button"></div>
+<div id="test"></div>
+
+<script type="text/javascript">
+
+    var btn = Ext4.create('Ext.button.Button', {
+        text: "Press me!",
+        renderTo: 'button',
+        handler: function() {
+            qwp.getQueryDetails(makeQueryConfig, getQueryFailure, qwp);
+        }
+    });
+
+    var queryConfig;
+
+    var qwp = LABKEY.QueryWebPart({
+        schemaName: 'study',
+        queryName: 'DEXAs',
+        viewName: 'default'
+    });
+
+    qwp.render('test');
+
+    function makeQueryConfig(queryDeets, viewName, somethingElse) {
+        queryConfig = qwp.getQueryConfig();
+
+        for(i in queryDeets.views) {
+            if(queryDeets.views[i].name == qwp.viewName) {
+                qwp.currentQueryConfig = queryDeets.views[i];
+                break;
+            }
+        }
+
+        if(qwp.currentQueryConfig == undefined) {
+            //Error
+        } else if(qwp.currentQueryConfig.shared !== true) {
+            //If not a shared view, we'll have to build a column array
+            //Maybe we should just do this by default anyway??
+        }
+
+        if(queryConfig.columns == undefined) {
+                queryConfig.columns = [];
+            }
+        for(i in qwp.currentQueryConfig.columns) {
+            queryConfig.columns.push(qwp.currentQueryConfig.columns[i].key);
+        }
+
+        if(qwp.currentQueryConfig.filter != undefined && qwp.currentQueryConfig.filter.length > 0) {
+            if(queryConfig.filter == undefined) {
+                queryConfig.filter = [];
+            }
+            for(i in qwp.currentQueryConfig.filter) {
+                queryConfig.filter.push(LABKEY.Filter.create(qwp.currentQueryConfig.filter[i].fieldKey, qwp.currentQueryConfig.filter[i].value, LABKEY.Filter.getFilterTypeForURLSuffix(qwp.currentQueryConfig.filter[i].op)));
+            }
+        }
+        if(qwp.currentQueryConfig.sort != undefined && qwp.currentQueryConfig.sort.length > 0) {
+            var sortArray = [];
+            for(i in qwp.currentQueryConfig.sort) {
+                sortArray.push(qwp.currentQueryConfig.sort[i].dir + qwp.currentQueryConfig.sort[i].fieldKey)
+            }
+            queryConfig.sort = sortArray.join(",");
+        }
+
+    }
+
+    function getQueryFailure(a, b, c) {
+        alert("FAILURE!!!!!!HAHAH!!!!HASHFDHFSDF");
+    }
+
+    var whatever = "STFUNUB";
+</script>
