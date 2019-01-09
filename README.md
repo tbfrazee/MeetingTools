@@ -12,5 +12,7 @@ The View Share web part allows users to create a room, call up grid views, and s
 ## Installation
 Download the repository and use gradlew:meetingtools:deployModule within the Labkey project directory to build the module and deploy it to your server.
 
+Pre-compiled module files are coming soon.
+
 ## Usage
 Both the Chat and View Share web parts are available under the web part list. A folder administrator can add them to any folder for use.
